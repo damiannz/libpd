@@ -3,9 +3,10 @@
 #include <portaudio.h>
 #include <stdint.h>
 #include <string.h>
+#include <sys/time.h>
 
 void pdprint(const char *s) {
-  printf("%s", s);
+  printf("%s\n", s);
 }
 
 void pdnoteon(int ch, int pitch, int vel) {
@@ -27,6 +28,11 @@ volatile uint8_t ringbufReadBlock, ringbufWriteBlock;
 uint8_t ringbufCount;
 int situation = 0;
 
+unsigned long portaudioCallbackUsecsTotal = 0;
+unsigned int portaudioCallbackCount = 0; 
+struct timeval portaudioLastTime;
+
+
 
 static int portaudioCallback( const void* input, void * output,
 		unsigned long framesPerBuffer,
@@ -36,6 +42,15 @@ static int portaudioCallback( const void* input, void * output,
 {
 	float *out = (float*)output;
 	float *in = (float*)input;
+
+	struct timeval now;
+   	gettimeofday( &now, NULL );
+	struct timeval delta;
+	timersub( &now, &portaudioLastTime, &delta );
+	portaudioCallbackUsecsTotal += delta.tv_sec*1000*1000 + delta.tv_usec;
+	portaudioCallbackCount++;
+	portaudioLastTime = now;
+
 
 
 /*	if ( statusFlags & paInputUnderflow )
@@ -98,7 +113,26 @@ static void processBlock(float* in, float* out)
 }
 void usage( const char* argv0 )
 {
-	fprintf(stderr, "usage: %s [-l libpath [-l libpath] ...] [-s samplerate] [-n bufcount] [-np portaudio_bufcount] file\n", argv0);
+	fprintf(stderr, "usage: %s [-l libpath [-l libpath] ...] [-d deviceId] [-dl] [-s samplerate] [-n bufcount] [-np portaudio_bufcount] file\n", argv0);
+}
+
+void listDevices()
+{
+	printf("listing devices\n");
+	int numApis = Pa_GetHostApiCount();
+	for ( int i=0; i<numApis; i++ )
+	{
+		const PaHostApiInfo* info = Pa_GetHostApiInfo( i );
+		printf("API %i %s has %i devices\n", info->type, info->name, info->deviceCount );
+	}
+	int numDevices = Pa_GetDeviceCount();
+	for ( int i=0; i<numDevices; i++ )
+	{
+		const PaDeviceInfo* info = Pa_GetDeviceInfo( i );
+		printf("Device %i: %s, host api %i, channels in %i out %i\n", i, info->name, info->hostApi, info->maxInputChannels, info->maxOutputChannels );
+
+	}
+
 }
 
 int main(int argc, char **argv) {
@@ -111,9 +145,10 @@ int main(int argc, char **argv) {
 	ringbufCount = 16;
 	int portaudioBufcount = ringbufCount/4;
 	char *file;
-	if ( argc > 2 )
+	int deviceId = -1;
+	if ( argc > 1 )
 	{	
-		for ( int i=1; i<argc-1; i++ )
+		for ( int i=1; i<argc; i++ )
 		{
 			if ( strcmp(argv[i], "-s" ) == 0 )
 			{
@@ -123,6 +158,15 @@ int main(int argc, char **argv) {
 			{
 				ringbufCount = atoi(argv[++i]);
 			}
+			else if ( strcmp( argv[i], "-dl" ) == 0 )
+			{
+				listDevices();
+				exit(0);
+			}
+			else if ( strcmp( argv[i], "-d" ) == 0 )
+			{
+				deviceId = atoi(argv[++i]);
+			}
 			else if ( strcmp( argv[i], "-np" ) == 0 )
 			{
 				portaudioBufcount = atoi(argv[++i]);
@@ -131,7 +175,7 @@ int main(int argc, char **argv) {
 			{
 				libpd_add_to_search_path( argv[++i] );
 			}
-			else
+			else if ( i<argc-1 )
 			{
 				usage(argv[0]);
 				return -1;
@@ -159,11 +203,6 @@ int main(int argc, char **argv) {
 	addacs_in_setup();
 	addacs_out_setup();
 
-	// compute audio    [; pd dsp 1(
-	libpd_start_message(1); // one entry in list
-	libpd_add_float(1.0f);
-	libpd_finish_message("pd", "dsp");
-
 	// open patch    o   [; pd open file folder(
 	char folder[4096];
 	char* basename = strrchr( file, '/' );
@@ -180,6 +219,8 @@ int main(int argc, char **argv) {
 	libpd_openfile(file, folder);
 	printf(" addacs_in exists? %i\n", libpd_exists( "addacs_in" ) ); 
 
+
+	gettimeofday( &portaudioLastTime, NULL );
 
 	PaStream *stream;
 	PaError err;
@@ -212,6 +253,13 @@ int main(int argc, char **argv) {
 		exit(3);
 	}
 
+	sleep( 1 );
+	// compute audio    [; pd dsp 1(
+	libpd_start_message(1); // one entry in list
+	libpd_add_float(1.0f);
+	libpd_finish_message("pd", "dsp");
+
+
 
 	int loopcount =0;
 	int needcount[128];
@@ -235,8 +283,12 @@ int main(int argc, char **argv) {
 		if( countNeeded >=0 && countNeeded < 128 )
 			needcount[countNeeded]++;		
 		loopcount++;
-		if ( loopcount%10000==0 )
+		if ( portaudioCallbackCount > 44100/(portaudioBufcount*BLOCKSIZE_FRAMES) )
 		{
+			printf( "average pa calls were %fms apart\n", (float)portaudioCallbackUsecsTotal/(1000*portaudioCallbackCount) );
+			portaudioCallbackCount = 0;
+			portaudioCallbackUsecsTotal = 0;
+/*
 			printf( "\n %8i %8i %8i %8i %8i %8i %8i %8i\n", 0, 1, 2, 3, 4, 5, 6, 7 );
 			for ( int i=0; i<64; i++ )
 			{
@@ -245,6 +297,7 @@ int main(int argc, char **argv) {
 					printf("\n");
 			}
 			printf("\n");
+			*/
 		}
 
 //		printf("need %i (w %2i - r %2i) (situation % 8i)\r", countNeeded, ringbufWriteBlock, ringbufReadBlockCached, situation );

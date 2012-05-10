@@ -2,7 +2,7 @@ SRC_FILES = pdtest.c ~/addacs/pd-external/addacs_in.c ~/addacs/pd-external/addac
 LIBPD = ../../../libs/libpd.so
 TARGET = pdtest
 
-CFLAGS = -I../../../pure-data/src -I../../../libpd_wrapper -std=c99 -O3 -march=native -I ~/addacs
+CFLAGS = -I../../../pure-data/src -I../../../libpd_wrapper -std=gnu99 -Os -march=native -I ~/addacs
 LDFLAGS = -lportaudio
 
 .PHONY: clean clobber
